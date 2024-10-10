@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Download .yves ZIP file - YouVersion-DL</title>
+<style type="text/css">
+	table { border-collapse: collapse; border: 3px solid; }
+	th, td { border: 1px solid; padding: 5px; }
+	th { border-bottom: 2px; }
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script>
+window.onerror = alert;
+function cpfetch(url) {
+	return fetch("https://corsproxy.io/?" + url).then(x => x, x => fetch("https://thingproxy.freeboard.io/fetch/" + url));
+}
+window.onload = function() {
+	let languages = document.getElementById("languages");
+	cpfetch("https://www.bible.com/api/bible/configuration").then(x => x.json()).then(function(json) {
+		for(let lang of json.response.data.default_versions) {
+			let option = document.createElement("option");
+			option.value = lang.language_tag;
+			option.innerText = lang.name+" ["+lang.local_name+"]";
+			languages.appendChild(option);
+		};
+	}, onerror);
+	languages.addEventListener("change", function(evt) {
+		cpfetch("https://www.bible.com/api/bible/versions?language_tag=" + languages.value + "&type=all").then(x => x.json()).then(function(json) {
+			let vers = document.getElementById("versions");
+			vers.innerHTML = '<tr><th>ID</th><th>Title</th><th>Local Title</th><th>Downloads</th></tr>';
+			for(let ver of json.response.data.versions) {
+				let tr = document.createElement("tr");
+				let td = document.createElement("td"); tr.appendChild(td); td.innerText = "" + ver.id;
+				td = document.createElement("td"); tr.appendChild(td); td.innerText = "" + ver.title;
+				td = document.createElement("td"); tr.appendChild(td); td.innerText = "" + ver.local_title;
+				td = document.createElement("td"); tr.appendChild(td); td.innerHTML = '<a href="https:' + ver.offline.url + '">.yves ZIP</a> <a href="javascript:loadMeta(' + ver.id +')">JSON Metadata</a>';
+				vers.appendChild(tr);
+			}
+		}, onerror);
+	});
+}
+function loadMeta(vid) {
+	cpfetch("https://www.bible.com/api/bible/version/"+vid).then(x=>x.blob()).then(function(blob) {
+		saveAs(blob, vid + "_meta.json");
+	}, onerror);
+}
+</script>
+</head>
+<body>
+<p><a href="index.html">&larr; YouVersion-DL</a></p>
+<h1>Step 1: Download .yves ZIP file</h1>
+<p>
+Select a language. Select a Bible. Download DRM-protected .yves ZIP files. You can also download JSON metadata.
+Bible name and bible book names are only in metadata. <b>Not</b> included in .yves ZIP file.</p>
+<p>Language: <select id="languages"><option value=""></option></select></p>
+<table id="versions"><tr></tr></table>
+<h2>Enjoy!</h2>
+</body>
+</html>

@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Convert HTML fragments to USX3 - YouVersion-DL</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<script>
+window.onerror = alert;
+var booktitles = {};
+var openVerseEid = null;
+window.onload = function () {
+	document.getElementById("metafile").addEventListener("change", function (evt) {
+		booktitles = {};
+		let reader = new FileReader();
+		reader.onload = function (event) {
+			let obj = JSON.parse(event.target.result);
+			for (let book of obj.books) {
+				booktitles[book.usfm] = [book.human_long, book.human, book.abbreviation];
+			}
+			document.getElementById("biblename").value = obj.local_title;
+			document.getElementById("metafileinfo").innerText = "(" + Object.keys(booktitles).length + " book titles loaded)";
+		};
+		reader.readAsText(event.target.files[0]);
+	});
+	document.getElementById("file").addEventListener("change", function (evt) {
+		let f = evt.target.files[0];
+		JSZip.loadAsync(f).then(function (zip) {
+			let promises = [], books = {};
+			zip.forEach(function (relativePath, zipEntry) {
+				if (relativePath.endsWith(".html")) {
+					let bookchap = relativePath.substring(0, relativePath.length - 5).split("/");
+					if (bookchap[1] == 'INTRO') bookchap[1] = 0;
+					promises.push(zipEntry.internalStream("string").accumulate().then(function (html) {
+						if (!(bookchap[0] in books)) books[bookchap[0]] = [];
+						books[bookchap[0]][+bookchap[1]] = html;
+						return Promise.resolve();
+					}));
+				}
+			}, onerror);
+			Promise.all(promises).then(function () {
+				let outf = new JSZip();
+				for (let bookid in books) {
+					outf.file(bookid + ".usx", createUSX(books[bookid], bookid));
+				}
+				return outf.generateAsync({ type: "blob", compression: "DEFLATE" });
+			}).then(function (zf) {
+				saveAs(zf, f.name.replace(".zip", "-usx.zip"));
+			}, onerror);
+		}, onerror);
+	});
+}
+function createUSX(chapters, bookid) {
+	let usx = document.implementation.createDocument(null, 'usx');
+	usx.documentElement.setAttribute("version", "3.0");
+	let usxBook = usx.createElement("book");
+	usx.documentElement.appendChild(usxBook);
+	usxBook.setAttribute("style", "id");
+	usxBook.setAttribute("code", bookid);
+	usxBook.appendChild(usx.createTextNode(document.getElementById("biblename").value));
+	let titles = booktitles[bookid];
+	if (titles !== undefined) {
+		let usxPara = usx.createElement("para");
+		usxPara.setAttribute("style", "h");
+		usxPara.appendChild(usx.createTextNode(titles[1]));
+		usx.documentElement.appendChild(usxPara);
+		usxPara = usx.createElement("para");
+		usxPara.setAttribute("style", "toc1");
+		usxPara.appendChild(usx.createTextNode(titles[0]));
+		usx.documentElement.appendChild(usxPara);
+		usxPara = usx.createElement("para");
+		usxPara.setAttribute("style", "toc2");
+		usxPara.appendChild(usx.createTextNode(titles[1]));
+		usx.documentElement.appendChild(usxPara);
+		usxPara = usx.createElement("para");
+		usxPara.setAttribute("style", "toc3");
+		usxPara.appendChild(usx.createTextNode(titles[2]));
+		usx.documentElement.appendChild(usxPara);
+		usxPara = usx.createElement("para");
+		usxPara.setAttribute("style", "mt");
+		usxPara.appendChild(usx.createTextNode(titles[0]));
+		usx.documentElement.appendChild(usxPara);
+	}
+	if (chapters[0] !== undefined) {
+		createUSXChapter(usx, chapters[0], bookid, 0);
+	}
+	for (let cn = 1; cn < chapters.length; cn++) {
+		if (chapters[cn] !== undefined) {
+			let ch = usx.createElement("chapter");
+			ch.setAttribute('number', '' + cn);
+			ch.setAttribute("sid", bookid + " " + cn);
+			ch.setAttribute("style", "c");
+			usx.documentElement.appendChild(ch);
+			createUSXChapter(usx, chapters[cn], bookid, cn);
+			ch = usx.createElement("chapter");
+			ch.setAttribute("eid", bookid + " " + cn);
+			usx.documentElement.appendChild(ch);
+		}
+	}
+	return new XMLSerializer().serializeToString(usx.documentElement);
+}
+function createUSXChapter(usx, rawHTML, bookid, chapter) {
+	let container = document.createElement("div");
+	container.innerHTML = rawHTML.replace(/[\r\n\t ]+/g, " ");
+	container = container.firstElementChild.firstElementChild.firstElementChild;
+	if (chapter > 0) container.removeChild(container.firstElementChild);
+	let usxLastVerseTarget = null;
+	for (let child of container.children) {
+		if (child.tagName == "TABLE") {
+			let usxTable = usx.createElement("table");
+			usx.documentElement.appendChild(usxTable);
+			for (let row of child.getElementsByTagName("tr")) {
+				let usxRow = usx.createElement("row");
+				usxRow.setAttribute("style", "tr");
+				usxTable.appendChild(usxRow);
+				let cellnum = 0;
+				for (let cell of row.children) {
+					cellnum++;
+					let usxCell = usx.createElement("cell");
+					usxCell.setAttribute("style", (cell.tagName == "TH" ? "th" : "tc") + cellnum);
+					usxCell.setAttribute("align", "start");
+					usxRow.appendChild(usxCell);
+					usxLastVerseTarget = usxCell;
+					parseUSXParagraph(usxCell, cell, bookid, chapter);
+				}
+			}
+		} else {
+			let usxPara = usx.createElement("para");
+			usxPara.setAttribute("style", child.className);
+			usxLastVerseTarget = usxPara;
+			usx.documentElement.appendChild(usxPara);
+			parseUSXParagraph(usxPara, child, bookid, chapter);
+		}
+	}
+	if (chapter != 0 && openVerseEid != null) {
+		let usxVerse = usx.createElement("verse");
+		usxVerse.setAttribute("eid", openVerseEid);
+		usxLastVerseTarget.appendChild(usxVerse);
+		openVerseEid = null;
+	}
+}
+function parseUSXParagraph(usxTarget, containerTag, bookid, chapter) {
+	for (let child of containerTag.childNodes) {
+		if (child instanceof Text) {
+			usxTarget.appendChild(usxTarget.ownerDocument.createTextNode(child.nodeValue));
+		} else if (child instanceof HTMLElement && child.tagName == "SPAN") {
+			if (child.className == "content" || child.className == "heading" || child.classList.contains("verse")) {
+				parseUSXParagraph(usxTarget, child, bookid, chapter);
+			} else if (child.className == "label") {
+				let alabel = child.textContent.replace(/\u200f-/g, "-");
+				let vlabel = alabel.replace(/[a-z]|^\[|\]$/g, "");
+				let vid = bookid + " " + chapter + ":" + vlabel.replace(/,(.*,)?/, "-");
+				if (openVerseEid != null) {
+					let usxVerse = usxTarget.ownerDocument.createElement("verse");
+					usxVerse.setAttribute("eid", openVerseEid);
+					usxTarget.appendChild(usxVerse);
+				}
+				openVerseEid = vid;
+				let usxVerse = usxTarget.ownerDocument.createElement("verse");
+				usxVerse.setAttribute("style", "v");
+				usxVerse.setAttribute("number", vlabel);
+				usxVerse.setAttribute("sid", vid);
+				if (vlabel != alabel) {
+					usxVerse.setAttribute("pubnumber", alabel);
+				}
+				usxTarget.appendChild(usxVerse);
+			} else if (child.classList.contains("note")) {
+				let usxNote = usxTarget.ownerDocument.createElement("note");
+				usxNote.setAttribute("caller", "+");
+				child.classList.remove("note");
+				usxNote.setAttribute("style", child.className);
+				child.classList.add("note");
+				usxTarget.appendChild(usxNote);
+				if (child.children.length == 2) {
+					parseUSXParagraph(usxNote, child.children[1], bookid, chapter);
+				}
+			} else {
+				let usxChar = usxTarget.ownerDocument.createElement("char");
+				usxChar.setAttribute("style", child.className);
+				usxTarget.appendChild(usxChar);
+				parseUSXParagraph(usxChar, child, null, bookid, chapter);
+			}
+		}
+	}
+}
+</script>
+</head>
+<body>
+<p><a href="index.html">&larr; YouVersion-DL</a></p>
+<h1>Step 3: Convert HTML fragments to USX3</h1>
+<p>Upload HTML Fragments ZIP file. Maybe also JSON metadata. Get USX3 ZIP file.</p>
+<p>Meta JSON: <input type="file" id="metafile" name="metafile" /> <i><span id="metafileinfo">(no book titles loaded)</span></i></p>
+<p>Bible Name: <input type="text" style="width: 80%" id="biblename" name="biblename" value="Imported from YouVersion-DL"></p>
+<p>ZIP with HTML fragments: <input type="file" id="file" name="file" /></p>
+<h2>Enjoy!</h2>
+</body>
+</html>

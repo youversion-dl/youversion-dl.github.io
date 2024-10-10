@@ -1,2 +1,2 @@
 # youversion-dl.github.io
-Restored from Backup after DMCA
+ Download Bibles from YouVersion to use them in Bible software
